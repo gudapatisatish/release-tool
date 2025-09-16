@@ -2,23 +2,18 @@ package orchestrator
 
 import (
     "fmt"
+    "os"
+    "text/template"
 
+    "release-tool/internal/changelog"
+    "release-tool/internal/config"
+    "release-tool/internal/git"
     "release-tool/internal/targets"
     "release-tool/internal/version"
 )
 
-func Run(targetArgs []string, preRelease bool, dryRun bool) error {
-    fmt.Println("Detecting release targets...")
-    var releaseTargets []targets.ReleaseTarget
-
-    if len(targetArgs) == 0 {
-        if targets.FileExists("pyproject.toml") {
-            releaseTargets = append(releaseTargets, &targets.PythonTarget{})
-        }
-        if targets.FileExists("Dockerfile") {
-            releaseTargets = append(releaseTargets, &targets.DockerTarget{})
-        }
-    }
+func Run(preRelease, dryRun bool) error {
+    cfg, _ := config.LoadConfig()
 
     commits, lastTag, _ := git.GetCommitsSinceLastTag()
     nextVersion, err := version.CalculateNextVersion(preRelease, os.Getenv("CI_PIPELINE_ID"))
@@ -26,11 +21,43 @@ func Run(targetArgs []string, preRelease bool, dryRun bool) error {
         return err
     }
 
-    fmt.Printf("Releasing version %s (previous %s)\n", nextVersion, lastTag)
+    fmt.Printf("Calculated next version: %s (previous %s)\n", nextVersion, lastTag)
 
-    err = changelog.Generate(nextVersion, commits)
-    if err != nil {
+    changelogFile := "CHANGELOG.md"
+    if cfg != nil && cfg.Versioning.Changelog != "" {
+        changelogFile = cfg.Versioning.Changelog
+    }
+    if err := changelog.GenerateToFile(changelogFile, nextVersion, commits); err != nil {
         return err
+    }
+
+    var releaseTargets []targets.ReleaseTarget
+    if cfg != nil {
+        for _, t := range cfg.Targets {
+            switch t.Type {
+            case "python":
+                releaseTargets = append(releaseTargets, &targets.PythonTarget{
+                    Pyproject: t.PythonTarget.Pyproject,
+                    Repository: t.PythonTarget.Repository,
+                    Username: t.PythonTarget.Username,
+                    Password: t.PythonTarget.Password,
+                })
+            case "docker":
+                releaseTargets = append(releaseTargets, &targets.DockerTarget{
+                    Dockerfile: t.DockerTarget.Dockerfile,
+                    Image:      t.DockerTarget.Image,
+                    Tags:       t.DockerTarget.Tags,
+                })
+            }
+        }
+    } else {
+        fmt.Println("No config file detected → auto-detect mode")
+        if targets.FileExists("pyproject.toml") {
+            releaseTargets = append(releaseTargets, &targets.PythonTarget{Pyproject: "pyproject.toml"})
+        }
+        if targets.FileExists("Dockerfile") {
+            releaseTargets = append(releaseTargets, &targets.DockerTarget{Dockerfile: "Dockerfile"})
+        }
     }
 
     for _, t := range releaseTargets {
@@ -46,7 +73,15 @@ func Run(targetArgs []string, preRelease bool, dryRun bool) error {
     }
 
     if !dryRun {
-        return git.CreateTag(nextVersion)
+        tagFormat := "{{ .Version }}"
+        if cfg != nil && cfg.Versioning.TagFormat != "" {
+            tagFormat = cfg.Versioning.TagFormat
+        }
+
+        tmpl, _ := template.New("tag").Parse(tagFormat)
+        var buf string
+        _ = tmpl.Execute(&buf, map[string]string{"Version": nextVersion})
+        return git.CreateTag(buf)
     }
 
     fmt.Println("Dry-run complete.")

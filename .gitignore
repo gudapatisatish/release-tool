@@ -1,0 +1,20 @@
+# Binaries
+release-tool
+release-tool.exe
+
+# Test artifacts
+test-repo/
+version.env
+
+# Go build cache
+*.sum
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
